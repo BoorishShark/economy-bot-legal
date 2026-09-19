@@ -1,0 +1,27 @@
+# Privacy Policy for [Economy Bot]
+
+Last Updated: September 2026
+
+[Economy Bot] ("the Bot") is committed to protecting user data privacy. This policy outlines what data we collect, how it is used, and your rights regarding that data.
+
+## 1. Data We Collect
+To provide economy, store, and tracking features, the Bot securely stores the following Discord-provided data:
+* User IDs (to link balances, inventory, and progression to your specific profile).
+* Server IDs (to maintain isolated server-specific economies and custom store settings).
+* Role IDs & Channel IDs (to restrict or grant access to specific economy commands or store features).
+
+We do not collect or store personal real-world information, such as names, physical addresses, emails, or payment details.
+
+## 2. How We Use Data
+The data collected is used strictly to operate the Bot's core features, including:
+* Managing server-specific virtual currency and balances.
+* Processing custom in-game/virtual store transactions.
+* Tracking leaderboards and economy statistics within your server.
+
+## 3. Data Retention and Deletion
+* Data is stored securely and permanently unless the Bot is removed from a server, or a deletion request is made.
+* Server administrators can request a complete data wipe for their server at any time.
+* Individual users can request the deletion of their user data by contacting the developer directly.
+
+## 4. Third-Party Sharing
+We do not sell, trade, or share your data with any third-party services or external corporations. All data stays strictly within the Bot's operational database.

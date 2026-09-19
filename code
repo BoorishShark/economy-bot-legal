@@ -1,0 +1,195 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+import aiosqlite
+import asyncio
+from enum import Enum
+
+# ==================== CONFIGURATION ====================
+# Paste your actual long Discord Bot Token between the quotation marks below:
+TOKEN = "1j7DOrD1Qk56GpRPhsMo_5GXPq07T-3b"
+# =======================================================
+
+class CurrencyType(Enum):
+    copper = "copper"
+    silver = "silver"
+    gold = "gold"
+    platinum = "platinum"
+
+class Bot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        self.db = await aiosqlite.connect("dnd_advanced_economy.db")
+        
+        # 1. Wallets Table
+        await self.db.execute("CREATE TABLE IF NOT EXISTS inventory (user_id INTEGER, guild_id INTEGER, copper INTEGER DEFAULT 0, silver INTEGER DEFAULT 0, gold INTEGER DEFAULT 0, platinum INTEGER DEFAULT 0, PRIMARY KEY (user_id, guild_id))")
+        
+        # 2. Interchangeable Shop Catalog Table
+        await self.db.execute("CREATE TABLE IF NOT EXISTS shop_items (guild_id INTEGER, item_name TEXT, cost INTEGER, currency TEXT, description TEXT, PRIMARY KEY (guild_id, item_name))")
+
+        # 3. Player Character Inventories Table
+        await self.db.execute("CREATE TABLE IF NOT EXISTS player_inventory (user_id INTEGER, guild_id INTEGER, item_name TEXT, quantity INTEGER DEFAULT 0, PRIMARY KEY (user_id, guild_id, item_name))")
+
+        # 4. Server Shop Control Table (Tracks open/closed state and custom greetings)
+        await self.db.execute("CREATE TABLE IF NOT EXISTS shop_state (guild_id INTEGER PRIMARY KEY, is_open INTEGER DEFAULT 0, greeting TEXT DEFAULT 'Welcome to the shop!')")
+        
+        await self.db.commit()
+        print("Database initialized completely (With DM Shop Gatekeeping & Dynamic Greetings).")
+
+    async def close(self):
+        await super().close()
+        await self.db.close()
+
+bot = Bot()
+
+# Database Helper Functions
+async def get_wallet(user_id: int, guild_id: int):
+    async with bot.db.execute(
+        "SELECT copper, silver, gold, platinum FROM inventory WHERE user_id = ? AND guild_id = ?",
+        (user_id, guild_id)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return {"copper": row[0], "silver": row[1], "gold": row[2], "platinum": row[3]}
+        await bot.db.execute(
+            "INSERT INTO inventory (user_id, guild_id, copper, silver, gold, platinum) VALUES (?, ?, 50, 20, 10, 0)",
+            (user_id, guild_id)
+        )
+        await bot.db.commit()
+        return {"copper": 50, "silver": 20, "gold": 10, "platinum": 0}
+
+async def add_item_to_bag(user_id: int, guild_id: int, item_name: str, quantity: int):
+    clean_name = item_name.strip()
+    async with bot.db.execute(
+        "SELECT quantity FROM player_inventory WHERE user_id = ? AND guild_id = ? AND LOWER(item_name) = LOWER(?)",
+        (user_id, guild_id, clean_name)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            await bot.db.execute(
+                "UPDATE player_inventory SET quantity = quantity + ? WHERE user_id = ? AND guild_id = ? AND LOWER(item_name) = LOWER(?)",
+                (quantity, user_id, guild_id, clean_name)
+            )
+        else:
+            await bot.db.execute(
+                "INSERT INTO player_inventory (user_id, guild_id, item_name, quantity) VALUES (?, ?, ?, ?)",
+                (user_id, guild_id, clean_name, quantity)
+            )
+    await bot.db.commit()
+
+async def get_shop_state(guild_id: int):
+    async with bot.db.execute("SELECT is_open, greeting FROM shop_state WHERE guild_id = ?", (guild_id,)) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return {"is_open": bool(row[0]), "greeting": str(row[1])}
+        return {"is_open": False, "greeting": "The merchant wagon has not arrived in town yet."}
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user.name}")
+    try:
+        await bot.tree.sync()
+        print("Slash commands synced.")
+    except Exception as e:
+        print(f"Sync failed: {e}")
+
+# ==================== WALLET & BACKPACK COMMANDS ====================
+
+@bot.tree.command(name="purse", description="Check your coin pouch balances")
+async def purse(interaction: discord.Interaction, player: discord.Member = None):
+    target = player or interaction.user
+    wallet = await get_wallet(target.id, interaction.guild_id)
+    total_gp = (wallet["copper"] * 0.01) + (wallet["silver"] * 0.1) + wallet["gold"] + (wallet["platinum"] * 10)
+    
+    embed = discord.Embed(title=f"🎒 {target.display_name}'s Coin Pouch", color=discord.Color.dark_gold())
+    embed.add_field(name="🟤 Copper (cp)", value=f"{wallet['copper']} cp", inline=True)
+    embed.add_field(name="⚪ Silver (sp)", value=f"{wallet['silver']} sp", inline=True)
+    embed.add_field(name="🟡 Gold (gp)", value=f"**{wallet['gold']} gp**", inline=True)
+    embed.add_field(name="🪙 Platinum (pp)", value=f"{wallet['platinum']} pp", inline=True)
+    embed.add_field(name="📊 Value Summary", value=f"`{total_gp:.2f} gp` net exchange", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="backpack", description="Inspect items in your inventory sheet")
+async def backpack(interaction: discord.Interaction, player: discord.Member = None):
+    target = player or interaction.user
+    async with bot.db.execute(
+        "SELECT item_name, quantity FROM player_inventory WHERE user_id = ? AND guild_id = ? AND quantity > 0",
+        (target.id, interaction.guild_id)
+    ) as cursor:
+        rows = await cursor.fetchall()
+        
+    embed = discord.Embed(title=f"🎒 {target.display_name}'s Adventure Backpack", color=discord.Color.blue())
+    if not rows:
+        embed.description = "*This backpack is completely empty.*"
+    else:
+        for row in rows:
+            embed.add_field(name=f"⚔️ {row[0]}", value=f"Quantity: **x{row[1]}**", inline=True)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="use", description="Eat, drink, or consume items from your backpack")
+async def use(interaction: discord.Interaction, item_name: str, quantity: int = 1):
+    if quantity <= 0:
+        await interaction.response.send_message("You must consume a positive quantity!", ephemeral=True)
+        return
+
+    clean_name = item_name.strip()
+    async with bot.db.execute(
+        "SELECT item_name, quantity FROM player_inventory WHERE user_id = ? AND guild_id = ? AND LOWER(item_name) = LOWER(?)",
+        (interaction.user.id, interaction.guild_id, clean_name)
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        await interaction.response.send_message(f"⚠️ **Warning:** You do not have any '{clean_name}' in your backpack configuration!", ephemeral=True)
+        return
+
+    actual_name, current_qty = row[0], row[1]
+
+    if current_qty < quantity:
+        await interaction.response.send_message(
+            f"❌ **Action Denied:** Insufficient items! You only have **{current_qty}x** left.", 
+            ephemeral=True
+        )
+        return
+
+    new_qty = current_qty - quantity
+    await bot.db.execute(
+        "UPDATE player_inventory SET quantity = ? WHERE user_id = ? AND guild_id = ? AND LOWER(item_name) = LOWER(?)",
+        (new_qty, interaction.user.id, interaction.guild_id, clean_name)
+    )
+    await bot.db.commit()
+    await interaction.response.send_message(f"🍄 **{interaction.user.display_name}** consumed **x{quantity} {actual_name}**.")
+
+# ==================== DM SERVER GATEKEEPER INTERFACE ====================
+
+@bot.tree.command(name="store_open", description="DM ONLY: Open the marketplace and set a custom greeting")
+@app_commands.checks.has_permissions(administrator=True)
+async def store_open(interaction: discord.Interaction, greeting: str = "Welcome to the shop!"):
+    await bot.db.execute(
+        "INSERT INTO shop_state (guild_id, is_open, greeting) VALUES (?, 1, ?) ON CONFLICT(guild_id) DO UPDATE SET is_open = 1, greeting = ?", 
+        (interaction.guild_id, greeting, greeting)
+    )
+    await bot.db.commit()
+    await interaction.response.send_message(f"🏪 **Market Open:** {greeting}")
+
+@bot.tree.command(name="store_close", description="DM ONLY: Close down the marketplace")
+@app_commands.checks.has_permissions(administrator=True)
+async def store_close(interaction: discord.Interaction):
+    await bot.db.execute(
+        "INSERT INTO shop_state (guild_id, is_open) VALUES (?, 0) ON CONFLICT(guild_id) DO UPDATE SET is_open = 0", 
+        (interaction.guild_id,)
+    )
+    await bot.db.commit()
+    await interaction.response.send_message("❌ **Market Closed:** The merchant packing crates are locked up.")
+
+# ==================== MAIN RUNNER ====================
+async def main():
+    async with bot:
+        await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
